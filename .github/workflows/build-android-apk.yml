@@ -37,6 +37,30 @@ jobs:
           '
           grep -n "flutter_tools/gradle" android/settings.gradle || true
 
+      - name: Upgrade AGP & Gradle versions
+        run: |
+          python3 -c '
+          import glob, re
+          for p in glob.glob("android/**/*.gradle*", recursive=True):
+              with open(p, "r", encoding="utf-8") as f:
+                  s = f.read()
+              s2 = re.sub(r"(com\.android\.application[\"'\''\s]+version\s+[\"'\''])8\.[0-4]\.[0-9]+", r"\g<1>8.6.0", s)
+              s2 = re.sub(r"(com\.android\.library[\"'\''\s]+version\s+[\"'\''])8\.[0-4]\.[0-9]+", r"\g<1>8.6.0", s2)
+              s2 = re.sub(r"(com\.android\.tools\.build:gradle:)8\.[0-4]\.[0-9]+", r"\g<1>8.6.0", s2)
+              if s2 != s:
+                  with open(p, "w", encoding="utf-8") as f:
+                      f.write(s2)
+          w = "android/gradle/wrapper/gradle-wrapper.properties"
+          try:
+              with open(w, "r", encoding="utf-8") as f:
+                  ws = f.read()
+              ws2 = re.sub(r"gradle-[0-9.]+\-(bin|all)\.zip", r"gradle-8.7-\1.zip", ws)
+              with open(w, "w", encoding="utf-8") as f:
+                  f.write(ws2)
+          except FileNotFoundError:
+              pass
+          '
+
       - name: Install dependencies
         run: flutter pub get
 
