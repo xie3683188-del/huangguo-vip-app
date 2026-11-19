@@ -21,8 +21,21 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Repair Android project config
-        run: flutter create --platforms=android .
+      - name: Fix hardcoded Flutter SDK path in settings.gradle
+        run: |
+          SDK_DIR="${FLUTTER_ROOT:-$(dirname "$(dirname "$(which flutter)")")}"
+          echo "Using Flutter SDK at: $SDK_DIR"
+          python3 -c '
+          import os, re
+          path = "android/settings.gradle"
+          sdk = os.environ["SDK_DIR"]
+          with open(path, "r", encoding="utf-8") as f:
+              content = f.read()
+          content = re.sub(r"/[^\x27\"\s]+/flutter-sdk", sdk, content)
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(content)
+          '
+          grep -n "flutter_tools/gradle" android/settings.gradle || true
 
       - name: Install dependencies
         run: flutter pub get
