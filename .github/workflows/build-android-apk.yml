@@ -44,9 +44,9 @@ jobs:
           for p in glob.glob("android/**/*.gradle*", recursive=True):
               with open(p, "r", encoding="utf-8") as f:
                   s = f.read()
-              s2 = re.sub(r"(com\.android\.application[\"'\''\s]+version\s+[\"'\''])8\.[0-4]\.[0-9]+", r"\g<1>8.6.0", s)
-              s2 = re.sub(r"(com\.android\.library[\"'\''\s]+version\s+[\"'\''])8\.[0-4]\.[0-9]+", r"\g<1>8.6.0", s2)
-              s2 = re.sub(r"(com\.android\.tools\.build:gradle:)8\.[0-4]\.[0-9]+", r"\g<1>8.6.0", s2)
+              s2 = re.sub(r"(com\.android\.application[\"'\''\s]+version\s+[\"'\''])(8\.[0-9]+\.[0-9]+|9\.0\.[0-9]+)", r"\g<1>9.1.1", s)
+              s2 = re.sub(r"(com\.android\.library[\"'\''\s]+version\s+[\"'\''])(8\.[0-9]+\.[0-9]+|9\.0\.[0-9]+)", r"\g<1>9.1.1", s2)
+              s2 = re.sub(r"(com\.android\.tools\.build:gradle:)(8\.[0-9]+\.[0-9]+|9\.0\.[0-9]+)", r"\g<1>9.1.1", s2)
               if s2 != s:
                   with open(p, "w", encoding="utf-8") as f:
                       f.write(s2)
