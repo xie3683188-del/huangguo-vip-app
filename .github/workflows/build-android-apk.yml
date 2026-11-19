@@ -54,7 +54,7 @@ jobs:
           try:
               with open(w, "r", encoding="utf-8") as f:
                   ws = f.read()
-              ws2 = re.sub(r"gradle-[0-9.]+\-(bin|all)\.zip", r"gradle-8.7-\1.zip", ws)
+              ws2 = re.sub(r"gradle-[0-9.]+\-(bin|all)\.zip", r"gradle-9.3.1-\1.zip", ws)
               with open(w, "w", encoding="utf-8") as f:
                   f.write(ws2)
           except FileNotFoundError:
