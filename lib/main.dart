@@ -1,38 +1,142 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:pointycastle/export.dart' as pc;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
-
+// ======================= 封面图解密 =======================
+// 图床（qnlycc）已开启「加密图片」协议：CDN 返回的是 AES-128-CBC / NoPadding 加密后的
+// 二进制，Content-Type 为 binary/octet-stream。直接交给 Image.network 必然抛
+// `Exception: Invalid image data`。这里用网页端同一套 key/iv 先解密再交给 Image.memory。
+const String _kImgAesKey = 'f5d965df75336270';
+const String _kImgAesIv = '97b60394abc2fbe1';
+final Map<String, Future<Uint8List>> _coverCache = <String, Future<Uint8List>>{};
+Uint8List _aesCbcDecryptNoPadding(Uint8List key, Uint8List iv, Uint8List data) {
+  final cipher = pc.CBCBlockCipher(pc.AESEngine())
+    ..init(false, pc.ParametersWithIV(pc.KeyParameter(key), iv));
+  final out = Uint8List(data.length);
+  for (var i = 0; i + 16 <= data.length; i += 16) {
+    cipher.processBlock(data, i, out, i);
+  }
+  return out;
+}
+bool _looksLikePlainImage(Uint8List b) {
+  if (b.length < 12) return false;
+  final jpeg = b[0] == 0xFF && b[1] == 0xD8;
+  final png = b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47;
+  final webp = b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46;
+  return jpeg || png || webp;
+}
+Future<Uint8List> _downloadCover(String url) async {
+  final resp = await http.get(
+    Uri.parse(url),
+    headers: const {
+      'Accept': 'image/avif,image/webp,image/*,*/*',
+      'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+    },
+  ).timeout(const Duration(seconds: 20));
+  if (resp.statusCode != 200 || resp.bodyBytes.isEmpty) {
+    throw Exception('封面下载失败: HTTP ${resp.statusCode}');
+  }
+  final bytes = resp.bodyBytes;
+  // 站点以后若关掉加密，直接就是明文图片，不必解密
+  if (_looksLikePlainImage(bytes)) return bytes;
+  final usable = bytes.length - (bytes.length % 16);
+  if (usable == 0) throw Exception('封面密文长度异常: ${bytes.length}');
+  final plain = _aesCbcDecryptNoPadding(
+    Uint8List.fromList(utf8.encode(_kImgAesKey)),
+    Uint8List.fromList(utf8.encode(_kImgAesIv)),
+    Uint8List.sublistView(bytes, 0, usable),
+  );
+  if (!_looksLikePlainImage(plain)) throw Exception('封面解密后仍不是图片');
+  return plain;
+}
+Future<Uint8List> _loadCover(String url) {
+  final cached = _coverCache[url];
+  if (cached != null) return cached;
+  final future = _downloadCover(url);
+  _coverCache[url] = future;
+  // 失败不缓存，回到页面还能重试
+  future.then((_) {}, onError: (Object _) => _coverCache.remove(url));
+  return future;
+}
+/// 带解密的网络封面图：先 AES-128-CBC 解密再 Image.memory 显示。
+class CoverImage extends StatelessWidget {
+  final String url;
+  final BoxFit fit;
+  const CoverImage({super.key, required this.url, this.fit = BoxFit.cover});
+  @override
+  Widget build(BuildContext context) {
+    if (url.isEmpty) return const _CoverPlaceholder();
+    return FutureBuilder<Uint8List>(
+      future: _loadCover(url),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const _CoverPlaceholder(icon: Icons.broken_image);
+        }
+        if (!snapshot.hasData) {
+          return Container(
+            color: Colors.grey.shade900,
+            alignment: Alignment.center,
+            child: const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          );
+        }
+        return Image.memory(
+          snapshot.data!,
+          fit: fit,
+          gaplessPlayback: true,
+          errorBuilder: (context, error, stackTrace) =>
+              const _CoverPlaceholder(icon: Icons.broken_image),
+        );
+      },
+    );
+  }
+}
+class _CoverPlaceholder extends StatelessWidget {
+  final IconData icon;
+  const _CoverPlaceholder({this.icon = Icons.movie_outlined});
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Colors.grey.shade800,
+      alignment: Alignment.center,
+      child: Icon(icon, color: Colors.white38, size: 28),
+    );
+  }
+}
 void main() {
   runApp(const HuangguoVIPApp());
 }
-
 class HuangguoVIPApp extends StatelessWidget {
   const HuangguoVIPApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: '黄果短剧 VIP版',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.amber),
+        // 暗色必须由 ColorScheme 自己声明；ThemeData.brightness 与它冲突就会红屏
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.amber,
+          brightness: Brightness.dark,
+        ),
         useMaterial3: true,
-        brightness: Brightness.dark,
       ),
       home: const HomePage(),
     );
   }
 }
-
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
-
   @override
   State<HomePage> createState() => _HomePageState();
 }
-
 class _HomePageState extends State<HomePage> {
   final List<Map<String, dynamic>> _dramas = [];
   bool _loading = true;
@@ -41,29 +145,24 @@ class _HomePageState extends State<HomePage> {
   String _filterStatus = 'all';
   String _filterSort = 'hot';
   bool _isVIP = true;
-
   final List<String> _apiBases = [
     'https://huangguoai.com',
     'https://ctb09.ir95e08v.cc',
   ];
-
   @override
   void initState() {
     super.initState();
     _loadVIPStatus();
     _loadDramas();
   }
-
   Future<void> _loadVIPStatus() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _isVIP = prefs.getBool('isVIP') ?? true;
     });
   }
-
   Future<void> _loadDramas() async {
     setState(() => _loading = true);
-
     for (final apiBase in _apiBases) {
       try {
         final params = <String, String>{
@@ -73,7 +172,6 @@ class _HomePageState extends State<HomePage> {
           if (_filterStatus == 'completed') 'is_finished': '1',
           if (_filterStatus == 'unfinished') 'is_finished': '0',
         };
-
         final uri = Uri.parse('$apiBase/api/videos').replace(queryParameters: params);
         final response = await http.get(
           uri,
@@ -82,7 +180,6 @@ class _HomePageState extends State<HomePage> {
             'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
           },
         ).timeout(const Duration(seconds: 10));
-
         if (response.statusCode == 200) {
           final data = json.decode(response.body);
           if (data['status'] == 1 && data['data'] != null) {
@@ -113,10 +210,8 @@ class _HomePageState extends State<HomePage> {
         continue;
       }
     }
-
     setState(() => _loading = false);
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -196,7 +291,6 @@ class _HomePageState extends State<HomePage> {
             ),
     );
   }
-
   void _showFilterDialog() {
     showDialog(
       context: context,
@@ -274,13 +368,10 @@ class _HomePageState extends State<HomePage> {
     );
   }
 }
-
 class DramaCard extends StatelessWidget {
   final Map<String, dynamic> drama;
   final VoidCallback onTap;
-
   const DramaCard({super.key, required this.drama, required this.onTap});
-
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
@@ -291,16 +382,7 @@ class DramaCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
-              child: Image.network(
-                drama['cover'],
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) {
-                  return Container(
-                    color: Colors.grey[800],
-                    child: const Center(child: Icon(Icons.error)),
-                  );
-                },
-              ),
+              child: CoverImage(url: (drama['cover'] ?? '').toString()),
             ),
             Padding(
               padding: const EdgeInsets.all(8),
@@ -343,30 +425,23 @@ class DramaCard extends StatelessWidget {
     );
   }
 }
-
 class DetailPage extends StatefulWidget {
   final int dramaId;
-
   const DetailPage({super.key, required this.dramaId});
-
   @override
   State<DetailPage> createState() => _DetailPageState();
 }
-
 class _DetailPageState extends State<DetailPage> {
   Map<String, dynamic>? _drama;
   List<int> _episodes = [];
   bool _loading = true;
-
   @override
   void initState() {
     super.initState();
     _loadDetail();
   }
-
   Future<void> _loadDetail() async {
     setState(() => _loading = true);
-
     try {
       final response = await http.get(
         Uri.parse('https://huangguoai.com/video/${widget.dramaId}/'),
@@ -374,7 +449,6 @@ class _DetailPageState extends State<DetailPage> {
           'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
         },
       ).timeout(const Duration(seconds: 10));
-
       if (response.statusCode == 200) {
         final html = response.body;
         final match = RegExp(r'<script[^>]*id="videoInitialData"[^>]*>(.*?)</script>')
@@ -387,7 +461,6 @@ class _DetailPageState extends State<DetailPage> {
           final epPlaySrcs = data['epPlaySrcs'] as Map<String, dynamic>?;
           final availableEps = epPlaySrcs?.keys.length ?? 0;
           final isFinished = availableEps >= totalEp || data['is_finished'] == true;
-
           setState(() {
             _drama = {
               'id': widget.dramaId,
@@ -414,7 +487,6 @@ class _DetailPageState extends State<DetailPage> {
       setState(() => _loading = false);
     }
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -429,7 +501,13 @@ class _DetailPageState extends State<DetailPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Image.network(_drama!['cover']),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 440,
+                        child: CoverImage(
+                          url: (_drama!['cover'] ?? '').toString(),
+                        ),
+                      ),
                       Padding(
                         padding: const EdgeInsets.all(16),
                         child: Column(
@@ -504,13 +582,11 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 }
-
 class PlayerPage extends StatefulWidget {
   final int dramaId;
   final int episode;
   final Map<String, dynamic> epPlaySrcs;
   final String dramaTitle;
-
   const PlayerPage({
     super.key,
     required this.dramaId,
@@ -518,44 +594,36 @@ class PlayerPage extends StatefulWidget {
     required this.epPlaySrcs,
     required this.dramaTitle,
   });
-
   @override
   State<PlayerPage> createState() => _PlayerPageState();
 }
-
 class _PlayerPageState extends State<PlayerPage> {
   VideoPlayerController? _controller;
   bool _loading = true;
   Timer? _timer;
-
   @override
   void initState() {
     super.initState();
     _initPlayer();
     _startProgressTimer();
   }
-
   Future<void> _initPlayer() async {
     final videoUrl = widget.epPlaySrcs[widget.episode.toString()] as String?;
     if (videoUrl == null) {
       setState(() => _loading = false);
       return;
     }
-
     _controller = VideoPlayerController.networkUrl(Uri.parse(videoUrl));
     await _controller!.initialize();
     await _controller!.play();
-
     // 恢复上次进度
     final prefs = await SharedPreferences.getInstance();
     final savedTime = prefs.getDouble('progress_${widget.dramaId}_${widget.episode}');
     if (savedTime != null && savedTime > 0) {
       _controller!.seekTo(Duration(seconds: savedTime.toInt()));
     }
-
     setState(() => _loading = false);
   }
-
   void _startProgressTimer() {
     _timer = Timer.periodic(const Duration(seconds: 5), (timer) {
       if (_controller != null && _controller!.value.isInitialized) {
@@ -563,7 +631,6 @@ class _PlayerPageState extends State<PlayerPage> {
       }
     });
   }
-
   Future<void> _saveProgress() async {
     if (_controller != null) {
       final prefs = await SharedPreferences.getInstance();
@@ -575,14 +642,12 @@ class _PlayerPageState extends State<PlayerPage> {
       await prefs.setInt('last_episode', widget.episode);
     }
   }
-
   @override
   void dispose() {
     _timer?.cancel();
     _controller?.dispose();
     super.dispose();
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -630,28 +695,22 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 }
-
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
-
   @override
   State<HistoryPage> createState() => _HistoryPageState();
 }
-
 class _HistoryPageState extends State<HistoryPage> {
   List<Map<String, dynamic>> _history = [];
-
   @override
   void initState() {
     super.initState();
     _loadHistory();
   }
-
   Future<void> _loadHistory() async {
     final prefs = await SharedPreferences.getInstance();
     final lastDramaId = prefs.getInt('last_drama_id');
     final lastEpisode = prefs.getInt('last_episode');
-
     if (lastDramaId != null && lastEpisode != null) {
       setState(() {
         _history = [
@@ -663,7 +722,6 @@ class _HistoryPageState extends State<HistoryPage> {
       });
     }
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
