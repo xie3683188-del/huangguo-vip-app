@@ -1,21 +1,26 @@
 name: Build Android APK
+
 on:
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
       - name: Set up Java
         uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+
       - name: Fix hardcoded Flutter SDK path in settings.gradle
         run: |
           export SDK_DIR="${FLUTTER_ROOT:-$(dirname "$(dirname "$(which flutter)")")}"
@@ -31,6 +36,7 @@ jobs:
               f.write(content)
           '
           grep -n "flutter_tools/gradle" android/settings.gradle || true
+
       - name: Upgrade AGP & Gradle versions
         run: |
           python3 -c '
@@ -54,14 +60,24 @@ jobs:
           except FileNotFoundError:
               pass
           '
+
       - name: Install dependencies
         run: flutter pub get
+
       - name: Build Debug APK
         run: |
-          flutter build apk --debug
+          flutter build apk --debug || echo "::warning::flutter build 返回非 0，继续收集产物"
           echo "=== Searching for generated APK files ==="
           find . -name "*.apk" -print
+          echo "=== build output dirs ==="
+          find build -maxdepth 4 -type d 2>/dev/null | head -40 || true
+          if ! find . -name "*.apk" -print -quit | grep -q .; then
+            echo "::error::构建结束后没有找到任何 .apk，请把本步骤完整日志发我"
+            exit 1
+          fi
+
       - name: Upload APK Artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: android-apk-files
